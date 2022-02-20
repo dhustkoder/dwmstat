@@ -12,6 +12,7 @@
 #define ARRLEN(a) (sizeof(a)/sizeof(a[0]))
 typedef char*(*dwmstat_blk_update_fnp)(char*, int len);
 static char* cpublk_update(char* statp, int len);
+static char* gpublk_update(char* statp, int len);
 static char* ramblk_update(char* statp, int len);
 static char* timedateblk_update(char* statp, int len);
 
@@ -28,24 +29,43 @@ static bool terminate = false;
 static char* cpublk_update(char* statp, int len)
 {
 	static unsigned long long a[4] = { 0 };
-
 	unsigned long long b[4];
 
-	unsigned long long therm;
+	double usage_percent, therm;
+	FILE* f;
 
-	FILE* stat = fopen("/proc/stat", "r");
-	fscanf(stat, "%*s %llu %llu %llu %llu", &b[0], &b[1], &b[2], &b[3]);
-	fclose(stat);
+	f = fopen("/proc/stat", "r");
+	fscanf(f, "%*s %llu %llu %llu %llu", &b[0], &b[1], &b[2], &b[3]);
+	fclose(f);
 
-	FILE* temp = fopen("/sys/module/k10temp/drivers/pci:k10temp/0000:00:18.3/hwmon/hwmon0/temp1_input", "r");
-	fscanf(temp, "%llu", &therm);
-	fclose(temp);
+	f = fopen(cpu_thermal_file, "r");
+	fscanf(f, cpu_thermal_scan_fmt, &therm);
+	fclose(f);
 
-	long double avg = (long double)((b[0]+b[1]+b[2]) - (a[0]+a[1]+a[2])) / (long double)((b[0]+b[1]+b[2]+b[3]) - (a[0]+a[1]+a[2]+a[3])); 
+	usage_percent = (long double)((b[0]+b[1]+b[2]) - (a[0]+a[1]+a[2])) / 
+	            (long double)((b[0]+b[1]+b[2]+b[3]) - (a[0]+a[1]+a[2]+a[3])); 
 
 	memcpy(a, b, sizeof(a));
 
-	statp += snprintf(statp, len, "[CPU %04.1LF%% %.1lfºC]", avg * 100, ((double)therm) / 1000);
+	usage_percent *= 100;
+	therm /= cpu_thermal_divisor;
+
+	statp += snprintf(statp, len, "[CPU %04.1lf%% %.1lfºC]", usage_percent, therm);
+	return statp;
+}
+
+static char* gpublk_update(char* statp, int len)
+{
+	double therm;
+	FILE* f;
+
+	f = fopen(gpu_thermal_file, "r");
+	fscanf(f, gpu_thermal_scan_fmt, &therm);
+	fclose(f);
+
+	therm /= gpu_thermal_divisor;
+
+	statp += snprintf(statp, len, "[GPU %.1lfºC]", therm);
 	return statp;
 }
 
@@ -81,7 +101,7 @@ static char* timedateblk_update(char* statp, int len)
 	gettimeofday(&tv, NULL);
 	tm = localtime(&tv.tv_sec);
 
-	statp += strftime(statp, len, "[%B %d %A %H:%M]", tm);
+	statp += strftime(statp, len, "[%A %B %d %H:%M]", tm);
 	return statp;
 }
 
