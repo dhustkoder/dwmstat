@@ -1,20 +1,31 @@
-#include <unistd.h>
+#include <locale.h>
 #include <signal.h>
 #include <stdbool.h>
-#include <sys/time.h>
-#include <locale.h>
 #include <time.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+
+#include <unistd.h>
+#include <sys/time.h>
+#include <sys/statvfs.h>
 #include <X11/Xlib.h>
 
 #define ARRLEN(a) (sizeof(a)/sizeof(a[0]))
+
+struct mount_info {
+	const char* path;
+	const char* label;
+};
+
 typedef char*(*dwmstat_blk_update_fnp)(char*, int len);
+
 static char* cpublk_update(char* statp, int len);
 static char* gpublk_update(char* statp, int len);
 static char* ramblk_update(char* statp, int len);
+static char* mountblk_update(char* statp, int len);
 static char* timedateblk_update(char* statp, int len);
+
 
 #include "config.h"
 
@@ -42,8 +53,8 @@ static char* cpublk_update(char* statp, int len)
 	fscanf(f, cpu_thermal_scan_fmt, &therm);
 	fclose(f);
 
-	usage_percent = (long double)((b[0]+b[1]+b[2]) - (a[0]+a[1]+a[2])) / 
-	            (long double)((b[0]+b[1]+b[2]+b[3]) - (a[0]+a[1]+a[2]+a[3])); 
+	usage_percent = (double)((b[0]+b[1]+b[2]) - (a[0]+a[1]+a[2])) / 
+	            (double)((b[0]+b[1]+b[2]+b[3]) - (a[0]+a[1]+a[2]+a[3])); 
 
 	memcpy(a, b, sizeof(a));
 
@@ -91,6 +102,37 @@ static char* ramblk_update(char* statp, int len)
 	const double usage = (inuse / total) * 100.0;
 
 	statp += snprintf(statp, len, "[RAM %1.1lf%%]", usage);
+	return statp;
+}
+
+static char* mountblk_update(char* statp, int len)
+{
+	struct statvfs info;
+	int ret;
+
+	ret = snprintf(statp, len, "[");
+	statp += ret;
+	len -= ret;
+
+	for (int i = 0; i < ARRLEN(mounts); ++i) {
+		statvfs(mounts[i].path, &info);
+		double total = info.f_blocks;
+		double avail = info.f_bfree;
+		double used = total - avail;
+		ret = snprintf(statp,
+			len,
+			"%s %.1lf%%%s",
+			mounts[i].label,
+			(used / total) * 100,
+			(i == (ARRLEN(mounts) - 1)) ? "" : " "
+		);
+		statp += ret;
+		len -= ret;
+	}
+
+	ret = snprintf(statp, len, "]");
+	statp += ret;
+
 	return statp;
 }
 
@@ -146,9 +188,9 @@ int main()
 
 	while (!terminate) {
 		char* statp = newstat;
-		for (int i = 0; i < ARRLEN(dwmstat_blks); ++i) {
+		for (int i = 0; i < ARRLEN(blks); ++i) {
 			int len = (newstat + STATBUF_LEN) - statp;
-			statp = dwmstat_blks[i](statp, len);
+			statp = blks[i](statp, len);
 		}
 
 		dwmstat_flush();

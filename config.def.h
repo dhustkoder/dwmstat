@@ -14,10 +14,17 @@ static const char* const gpu_thermal_file = "/sys/module/amdgpu/drivers/pci:amdg
 static const char* const gpu_thermal_scan_fmt = "%lf";
 static const double gpu_thermal_divisor = 1000;
 
-static dwmstat_blk_update_fnp dwmstat_blks[] = {
+/* mounted partitions info */
+static struct mount_info mounts[] = {
+	{ .path = "/", .label = "ROOT" },
+	{ .path = "/mnt/SSD01", .label = "SSD01" }
+};
+
+static dwmstat_blk_update_fnp blks[] = {
 	cpublk_update,
 	gpublk_update,
 	ramblk_update,
+	mountblk_update,
 	timedateblk_update,
 };
 
