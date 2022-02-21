@@ -1,4 +1,4 @@
-CFLAGS=-Wall -Wextra -Os
+CFLAGS=-Wall -Wextra -Os -march=native
 LIBS=-lX11 -lcurl
 
 all: config.h dwmstat 

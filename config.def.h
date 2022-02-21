@@ -1,6 +1,6 @@
 
 /* maximum characteres on status bar excluding string terminator */
-#define STATBUF_LEN (64)
+#define STATBUF_LEN (128)
 
 static const char* const locale = "en_US.UTF-8";
 
