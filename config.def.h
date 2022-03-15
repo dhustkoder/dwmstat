@@ -24,8 +24,7 @@ static struct mount_info mounts[] = {
 };
 
 /* weather wttr.in url */
-static const int weather_buf_size = 24;
-static const char* const wttr_url = "https://wttr.in/Sao+Paulo,Brazil?format=1";
+static const char* const wttr_url = "https://wttr.in/Sao+Paulo,Brazil?format=%C+%t";
 
 static struct blk blks[] = {
 	{ .update_fn = cpublk_update, .delay = 5 },

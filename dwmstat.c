@@ -13,12 +13,10 @@
 #include <X11/Xlib.h>
 #include <curl/curl.h>
 
-/* maximum characteres on status bar excluding string terminator */
 #define BLK_BUFFER_SIZE (64)
 #define ARRAY_SIZE(a) (sizeof(a))
 #define ARRAY_ELMENT_SIZE(a) (sizeof(a[0]))
 #define ARRAY_LEN(a) (ARRAY_SIZE(a)/ARRAY_ELMENT_SIZE(a))
-
 
 struct blk_buf {
 	char data[BLK_BUFFER_SIZE];
@@ -29,8 +27,8 @@ typedef void(*blk_update_fnp)(struct blk_buf*);
 
 struct blk {
 	blk_update_fnp update_fn;
-	int delay;
-	int timer;
+	time_t delay;
+	time_t timer;
 	struct blk_buf buf;
 };
 
@@ -48,7 +46,6 @@ static void timedateblk_update(struct blk_buf* buf);
 static void weatherblk_update(struct blk_buf* buf);
 
 #include "config.h"
-
 
 static Display *dpy;
 static Window root;
@@ -122,9 +119,8 @@ static void cpublk_update(struct blk_buf* buf)
 static void gpublk_update(struct blk_buf* buf)
 {
 	double therm;
-	FILE* f;
 
-	f = fopen(gpu_thermal_file, "r");
+	FILE* f = fopen(gpu_thermal_file, "r");
 	fscanf(f, gpu_thermal_scan_fmt, &therm);
 	fclose(f);
 
@@ -181,60 +177,41 @@ static void mountblk_update(struct blk_buf* buf)
 	blk_buf_write(buf, "]");
 }
 
-
 static void timedateblk_update(struct blk_buf* buf)
 {
 	struct timeval tv;
-	struct tm* tm;
 	gettimeofday(&tv, NULL);
-	tm = localtime(&tv.tv_sec);
-	buf->len += strftime(buf->data, BLK_BUFFER_SIZE, "[%A %B %d %H:%M]", tm);
+
+	char tmpbuf[BLK_BUFFER_SIZE];
+	struct tm* tm = localtime(&tv.tv_sec);
+	strftime(tmpbuf, BLK_BUFFER_SIZE, "[%A %B %d %H:%M]", tm);
+
+	blk_buf_write(buf, "%s", tmpbuf);
 }
 
-ssize_t weather_curl_clbk(void *data, size_t size, size_t nmemb, void* udata)
+/****** weather blk *******/
+static ssize_t weather_curl_clbk(void* data, size_t size, size_t nmemb, void* udata)
 {
-	for (size_t i = 0; i < (size * nmemb); ++i)
-		printf("0x%X ", ((char*)data)[i]);
-	printf("\n");
-	size_t udata_size = 0;
-	size_t cp_size = 0;
+	char tmpbuf[BLK_BUFFER_SIZE];
+	size_t len = size * nmemb;
 
-	/* copies the weather icon and one leading space */
-	const char* second_space = strchr(data, 0x20) + 1;
-	cp_size = second_space - (char*)data;
-	if ((udata_size + cp_size) >= weather_buf_size)
-		return -1;
+	memcpy(tmpbuf, data, len);
+	tmpbuf[len] = 0x00;
 
-	memcpy(udata + udata_size, data, cp_size);
-	udata_size += cp_size;
-
-	/* copies the temperature, excluding line feed */
-	const char* temp = second_space + 1;
-	const char* linefeed = strchr(second_space, 0x0A);
-	cp_size = linefeed - temp;
-	if ((udata_size + cp_size) >= weather_buf_size)
-		return -1;
-
-	memcpy(udata + udata_size, temp, cp_size);
-	udata_size += cp_size;
-	/* assign the terminating nul charactere */
-	((char*)udata)[udata_size] = 0x00;
+	struct blk_buf* const buf = udata;
+	blk_buf_write(buf, "[%s]", tmpbuf);
 	return size * nmemb;
 }
 
 static void weatherblk_update(struct blk_buf* buf)
 {
-	char weather_buf[weather_buf_size];
-	CURL* curl_handle = curl_easy_init();
-	curl_easy_setopt(curl_handle, CURLOPT_URL, wttr_url);
-	curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, weather_curl_clbk);
-	curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, weather_buf);
-	CURLcode res = curl_easy_perform(curl_handle);
-
-	if (res == CURLE_OK)
-		blk_buf_write(buf, "[%s]", weather_buf);
-
-	curl_easy_cleanup(curl_handle);
+	CURL* ctx = curl_easy_init();
+	curl_easy_setopt(ctx, CURLOPT_URL, wttr_url);
+	curl_easy_setopt(ctx, CURLOPT_WRITEFUNCTION, weather_curl_clbk);
+	curl_easy_setopt(ctx, CURLOPT_WRITEDATA, buf);
+	curl_easy_setopt(ctx, CURLOPT_TIMEOUT, 3);
+	curl_easy_perform(ctx);
+	curl_easy_cleanup(ctx);
 }
 
 static void dwmstat_flush()
@@ -275,29 +252,26 @@ static void dwmstat_term()
 	XCloseDisplay(dpy);
 }
 
-
 int main()
 {
 	dwmstat_init();
 
 	while (!terminate) {
-		int min_sleep = 0;
-		int now = time(NULL);
+		time_t min_sleep = 0;
+		time_t now = time(NULL);
 		for (size_t i = 0; i < ARRAY_LEN(blks); ++i) {
 			if ((now - blks[i].timer) >= blks[i].delay) {
 				blks[i].timer = now;
 				blk_buf_clean(&blks[i].buf);
 				blks[i].update_fn(&blks[i].buf);
-			} else {
-				const int secs_remain = blks[i].delay - (now - blks[i].timer);
-				if (min_sleep == 0) {
-					min_sleep = secs_remain;
-				} else if (min_sleep > secs_remain) {
-					min_sleep = secs_remain;
-				}
+			} 
+			const time_t secs_remain = blks[i].delay - (now - blks[i].timer);
+			if (min_sleep == 0) {
+				min_sleep = secs_remain;
+			} else if (min_sleep > secs_remain) {
+				min_sleep = secs_remain;
 			}
 		}
-
 		dwmstat_flush();
 		sleep(min_sleep);
 	}
