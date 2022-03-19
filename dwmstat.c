@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include <assert.h>
 
 #include <unistd.h>
 #include <sys/time.h>
@@ -18,12 +19,13 @@
 #define ARRAY_ELMENT_SIZE(a) (sizeof(a[0]))
 #define ARRAY_LEN(a) (ARRAY_SIZE(a)/ARRAY_ELMENT_SIZE(a))
 
+struct blk;
+typedef void(*blk_update_fnp)(struct blk*);
+
 struct blk_buf {
 	char data[BLK_BUFFER_SIZE];
 	int len;
 };
-
-typedef void(*blk_update_fnp)(struct blk_buf*);
 
 struct blk {
 	blk_update_fnp update_fn;
@@ -38,12 +40,12 @@ struct mount_info {
 };
 
 
-static void cpublk_update(struct blk_buf* buf);
-static void gpublk_update(struct blk_buf* buf);
-static void ramblk_update(struct blk_buf* buf);
-static void mountblk_update(struct blk_buf* buf);
-static void timedateblk_update(struct blk_buf* buf);
-static void weatherblk_update(struct blk_buf* buf);
+static void cpublk_update(struct blk* blk);
+static void gpublk_update(struct blk* blk);
+static void ramblk_update(struct blk* blk);
+static void mountblk_update(struct blk* blk);
+static void timedateblk_update(struct blk* blk);
+static void weatherblk_update(struct blk* blk);
 
 #include "config.h"
 
@@ -54,6 +56,19 @@ static char oldstat[BLK_BUFFER_SIZE * ARRAY_LEN(blks)];
 static char newstat[BLK_BUFFER_SIZE * ARRAY_LEN(blks)];
 static bool terminate = false;
 
+static void fscanf_aux(const char* filepath, const char* fmt, ...)
+{
+	FILE* f;
+	va_list vl;
+
+	f = fopen(filepath, "r");
+	assert(f != NULL);
+	va_start(vl, fmt);
+	vfscanf(f, fmt, vl);
+	va_end(vl);
+	fclose(f);
+}
+
 static void blk_buf_clean(struct blk_buf* buf)
 {
 	memset(buf->data, 0, BLK_BUFFER_SIZE);
@@ -62,8 +77,11 @@ static void blk_buf_clean(struct blk_buf* buf)
 
 static void blk_buf_vwrite(struct blk_buf* buf, const char* fmt, va_list vl)
 {
-	int cap = BLK_BUFFER_SIZE - buf->len;
-	char* cursor = buf->data + buf->len;
+	int cap;
+	char* cursor;
+
+	cap = BLK_BUFFER_SIZE - buf->len;
+	cursor = buf->data + buf->len;
 	buf->len += vsnprintf(cursor, cap, fmt, vl);
 }
 
@@ -77,30 +95,30 @@ static void blk_buf_write(struct blk_buf* buf, const char* fmt, ...)
 
 static void blk_buf_alert_write(struct blk_buf* buf, bool alert, const char* fmt, ...)
 {
+	va_list vl;
+
+	va_start(vl, fmt);
+
 	if (alert) 
 		blk_buf_write(buf, "%s", alert_txt);
 	
-	va_list vl;
-	va_start(vl, fmt);
 	blk_buf_vwrite(buf, fmt, vl);
+
 	va_end(vl);
 }
 
-static void cpublk_update(struct blk_buf* buf)
+static void cpublk_update(struct blk* blk)
 {
 	static unsigned long long a[4] = { 0 };
+
 	unsigned long long b[4];
-
 	double usage_percent, therm;
-	FILE* f;
+	bool alert;
 
-	f = fopen("/proc/stat", "r");
-	fscanf(f, "%*s %llu %llu %llu %llu", &b[0], &b[1], &b[2], &b[3]);
-	fclose(f);
+	fscanf_aux("/proc/stat", "%*s %llu %llu %llu %llu", &b[0], &b[1], &b[2],
+		&b[3]);
 
-	f = fopen(cpu_thermal_file, "r");
-	fscanf(f, cpu_thermal_scan_fmt, &therm);
-	fclose(f);
+	fscanf_aux(cpu_thermal_file, cpu_thermal_scan_fmt, &therm);
 
 	usage_percent = (double)((b[0]+b[1]+b[2]) - (a[0]+a[1]+a[2])) / 
 	            (double)((b[0]+b[1]+b[2]+b[3]) - (a[0]+a[1]+a[2]+a[3])); 
@@ -110,32 +128,36 @@ static void cpublk_update(struct blk_buf* buf)
 	usage_percent *= 100;
 	therm /= cpu_thermal_divisor;
 
-	const bool alert = therm >= cpu_therm_alert_val ||
-	                   usage_percent >= cpu_usage_alert_val;
+	alert = therm >= cpu_therm_alert_val || usage_percent >= cpu_usage_alert_val;
 
-	blk_buf_alert_write(buf, alert, "[CPU %04.1lf%% %.1lfºC]", usage_percent, therm);
+	blk_buf_clean(&blk->buf);
+	blk_buf_alert_write(&blk->buf, alert, "[CPU %04.1lf%% %.1lfºC]",
+		usage_percent, therm);
 }
 
-static void gpublk_update(struct blk_buf* buf)
+static void gpublk_update(struct blk* blk)
 {
 	double therm;
+	bool alert;
 
-	FILE* f = fopen(gpu_thermal_file, "r");
-	fscanf(f, gpu_thermal_scan_fmt, &therm);
-	fclose(f);
+	fscanf_aux(gpu_thermal_file, gpu_thermal_scan_fmt, &therm);
 
 	therm /= gpu_thermal_divisor;
 
-	const bool alert = therm >= gpu_therm_alert_val;
-	blk_buf_alert_write(buf, alert, "[GPU %.1lfºC]", therm);
+	alert = therm >= gpu_therm_alert_val;
+
+	blk_buf_clean(&blk->buf);
+	blk_buf_alert_write(&blk->buf, alert, "[GPU %.1lfºC]", therm);
 }
 
-static void ramblk_update(struct blk_buf* buf)
+static void ramblk_update(struct blk* blk)
 {
 	unsigned long total, free, cached, buffers;
-	FILE* meminfo = fopen("/proc/meminfo", "r");
-	fscanf(
-		meminfo, 
+	double in_use, usage_percent;
+	bool alert;
+
+	fscanf_aux(
+		"/proc/meminfo",
 		"MemTotal: %lu kB\n"
 		"MemFree: %lu kB\n"
 		"MemAvailable: %*d kB\n"
@@ -146,78 +168,116 @@ static void ramblk_update(struct blk_buf* buf)
 		&buffers,
 		&cached
 	);
-	fclose(meminfo);
 
-	const double inuse = (total - free) - (cached + buffers);
-	const double usage = (inuse / total) * 100.0;
-	const bool alert = usage >= ram_usage_alert_val;
-	blk_buf_alert_write(buf, alert, "[RAM %1.1lf%%]", usage);
+	in_use = (total - free) - (cached + buffers);
+	usage_percent = (in_use / total) * 100.0;
+	alert = usage_percent >= ram_usage_alert_val;
+
+	blk_buf_clean(&blk->buf);
+	blk_buf_alert_write(&blk->buf, alert, "[RAM %1.1lf%%]", usage_percent);
 }
 
-static void mountblk_update(struct blk_buf* buf)
+static void mountblk_update(struct blk* blk)
 {
 	struct statvfs info;
+	double total, avail, used;
+	double used_percent;
 
-	blk_buf_write(buf, "[");
+	blk_buf_clean(&blk->buf);
+	blk_buf_write(&blk->buf, "[");
 
 	for (size_t i = 0; i < ARRAY_LEN(mounts); ++i) {
 		statvfs(mounts[i].path, &info);
-		double total = info.f_blocks;
-		double avail = info.f_bfree;
-		double used = total - avail;
-		blk_buf_write(
-			buf,
-			"%s %.1lf%%%s",
-			mounts[i].label,
-			(used / total) * 100,
+		total = info.f_blocks;
+		avail = info.f_bfree;
+		used = total - avail;
+		used_percent = (used / total) * 100;
+		blk_buf_write(&blk->buf, "%s %.1lf%%%s", mounts[i].label, used_percent,
 			(i == (ARRAY_LEN(mounts) - 1)) ? "" : " "
 		);
 	}
 
-	blk_buf_write(buf, "]");
+	blk_buf_write(&blk->buf, "]");
 }
 
-static void timedateblk_update(struct blk_buf* buf)
+static void timedateblk_update(struct blk* blk)
 {
+	char tmpbuf[BLK_BUFFER_SIZE];
 	struct timeval tv;
+	struct tm* tm;
+
 	gettimeofday(&tv, NULL);
+	tm = localtime(&tv.tv_sec);
+	strftime(tmpbuf, BLK_BUFFER_SIZE, "%A %B %d %H:%M", tm);
 
-	char tmpbuf[BLK_BUFFER_SIZE];
-	struct tm* tm = localtime(&tv.tv_sec);
-	strftime(tmpbuf, BLK_BUFFER_SIZE, "[%A %B %d %H:%M]", tm);
-
-	blk_buf_write(buf, "%s", tmpbuf);
+	blk_buf_clean(&blk->buf);
+	blk_buf_write(&blk->buf, "[%s]", tmpbuf);
 }
 
-/****** weather blk *******/
-static ssize_t weather_curl_clbk(void* data, size_t size, size_t nmemb, void* udata)
+static ssize_t weatherblk_curl_clbk(void* data, size_t size, size_t nmemb, void* udata)
 {
-	char tmpbuf[BLK_BUFFER_SIZE];
-	size_t len = size * nmemb;
+	char* tmpbuf = udata;
+	const size_t data_size = size * nmemb;
 
-	memcpy(tmpbuf, data, len);
-	tmpbuf[len] = 0x00;
+	if (data_size >= BLK_BUFFER_SIZE)
+		return -1;
 
-	struct blk_buf* const buf = udata;
-	blk_buf_write(buf, "[%s]", tmpbuf);
-	return size * nmemb;
+	memcpy(tmpbuf, data, data_size);
+	tmpbuf[data_size] = '\0';
+	return data_size;
 }
 
-static void weatherblk_update(struct blk_buf* buf)
+static void weatherblk_update(struct blk* blk)
 {
-	CURL* ctx = curl_easy_init();
+	char tmpbuf[BLK_BUFFER_SIZE];
+
+	CURL* ctx;
+	CURLcode code;
+
+	ctx = curl_easy_init();
+	assert(ctx != NULL);
 	curl_easy_setopt(ctx, CURLOPT_URL, wttr_url);
-	curl_easy_setopt(ctx, CURLOPT_WRITEFUNCTION, weather_curl_clbk);
-	curl_easy_setopt(ctx, CURLOPT_WRITEDATA, buf);
+	curl_easy_setopt(ctx, CURLOPT_WRITEFUNCTION, weatherblk_curl_clbk);
+	curl_easy_setopt(ctx, CURLOPT_WRITEDATA, tmpbuf);
 	curl_easy_setopt(ctx, CURLOPT_TIMEOUT, 3);
-	curl_easy_perform(ctx);
+	code = curl_easy_perform(ctx);
+
+	if (code == CURLE_OK) {
+		blk_buf_clean(&blk->buf);
+		blk_buf_write(&blk->buf, "[%s]", tmpbuf);
+	}
+
 	curl_easy_cleanup(ctx);
+}
+
+static time_t blks_update()
+{
+	time_t min_sleep, now, secs_remain;
+
+	min_sleep = 0;
+	now = time(NULL);
+
+	for (size_t i = 0; i < ARRAY_LEN(blks); ++i) {
+		if ((now - blks[i].timer) >= blks[i].delay) {
+			blks[i].timer = now;
+			blks[i].update_fn(&blks[i]);
+		} 
+
+		secs_remain = blks[i].delay - (now - blks[i].timer);
+		if (min_sleep == 0) {
+			min_sleep = secs_remain;
+		} else if (min_sleep > secs_remain) {
+			min_sleep = secs_remain;
+		}
+	}
+
+	return min_sleep;
 }
 
 static void dwmstat_flush()
 {
-	strcpy(newstat, blks[0].buf.data);
-	for (size_t i = 1; i < ARRAY_LEN(blks); ++i)
+	memset(newstat, 0, ARRAY_SIZE(newstat));
+	for (size_t i = 0; i < ARRAY_LEN(blks); ++i)
 		strcat(newstat, blks[i].buf.data);
 
 	if (strcmp(oldstat, newstat) == 0)
@@ -254,31 +314,18 @@ static void dwmstat_term()
 
 int main()
 {
+	time_t sleep_secs;
+
 	dwmstat_init();
 
 	while (!terminate) {
-		time_t min_sleep = 0;
-		time_t now = time(NULL);
-		for (size_t i = 0; i < ARRAY_LEN(blks); ++i) {
-			if ((now - blks[i].timer) >= blks[i].delay) {
-				blks[i].timer = now;
-				blk_buf_clean(&blks[i].buf);
-				blks[i].update_fn(&blks[i].buf);
-			} 
-			const time_t secs_remain = blks[i].delay - (now - blks[i].timer);
-			if (min_sleep == 0) {
-				min_sleep = secs_remain;
-			} else if (min_sleep > secs_remain) {
-				min_sleep = secs_remain;
-			}
-		}
+		sleep_secs = blks_update();
 		dwmstat_flush();
-		sleep(min_sleep);
+		sleep(sleep_secs);
 	}
 
 	dwmstat_term();
 
 	return 0;
 }
-
 
