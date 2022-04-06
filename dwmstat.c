@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <assert.h>
 
+#include <libudev.h>
 #include <unistd.h>
 #include <sys/time.h>
 #include <sys/statvfs.h>
@@ -19,8 +20,17 @@
 #define ARRAY_ELMENT_SIZE(a) (sizeof(a[0]))
 #define ARRAY_LEN(a) (ARRAY_SIZE(a)/ARRAY_ELMENT_SIZE(a))
 
+enum cpu_thermal_driver {
+	CPU_THERMAL_DRIVER_K10TEMP,
+	CPU_THERMAL_DRIVER_INTEL_SOC_DTS,
+};
+
+enum gpu_thermal_driver {
+	GPU_THERMAL_DRIVER_AMDGPU
+};
+
 struct blk;
-typedef void(*blk_update_fnp)(struct blk*);
+typedef void(*blk_update_fnp)(struct blk *);
 
 struct blk_buf {
 	char data[BLK_BUFFER_SIZE];
@@ -35,30 +45,31 @@ struct blk {
 };
 
 struct mount_info {
-	const char* path;
-	const char* label;
+	const char *path;
+	const char *label;
 };
 
 
-static void cpublk_update(struct blk* blk);
-static void gpublk_update(struct blk* blk);
-static void ramblk_update(struct blk* blk);
-static void mountblk_update(struct blk* blk);
-static void timedateblk_update(struct blk* blk);
-static void weatherblk_update(struct blk* blk);
+static void cpublk_update(struct blk *blk);
+static void gpublk_update(struct blk *blk);
+static void ramblk_update(struct blk *blk);
+static void mountblk_update(struct blk *blk);
+static void timedateblk_update(struct blk *blk);
+static void weatherblk_update(struct blk *blk);
 
 #include "config.h"
 
 static Display *dpy;
 static Window root;
+static struct udev *udev;
 
 static char oldstat[BLK_BUFFER_SIZE * ARRAY_LEN(blks)];
 static char newstat[BLK_BUFFER_SIZE * ARRAY_LEN(blks)];
 static bool terminate = false;
 
-static void fscanf_aux(const char* filepath, const char* fmt, ...)
+static void fscanf_aux(const char *filepath, const char *fmt, ...)
 {
-	FILE* f;
+	FILE *f;
 	va_list vl;
 
 	f = fopen(filepath, "r");
@@ -69,25 +80,26 @@ static void fscanf_aux(const char* filepath, const char* fmt, ...)
 	fclose(f);
 }
 
-static void blk_buf_clean(struct blk_buf* buf)
+static void blk_buf_clean(struct blk_buf *buf)
 {
 	memset(buf->data, 0, BLK_BUFFER_SIZE);
 	buf->len = 0;
 }
 
-static void blk_buf_vwrite(struct blk_buf* buf, const char* fmt, va_list vl)
+static void blk_buf_vwrite(struct blk_buf *buf, const char *fmt, va_list vl)
 {
 	int cap;
-	char* cursor;
+	char *cursor;
 
 	cap = BLK_BUFFER_SIZE - buf->len;
 	cursor = buf->data + buf->len;
 	buf->len += vsnprintf(cursor, cap, fmt, vl);
 }
 
-static void blk_buf_write(struct blk_buf* buf, const char* fmt, ...)
+static void blk_buf_write(struct blk_buf *buf, const char *fmt, ...)
 {
 	va_list vl;
+
 	va_start(vl, fmt);
 	blk_buf_vwrite(buf, fmt, vl);
 	va_end(vl);
@@ -107,18 +119,62 @@ static void blk_buf_alert_write(struct blk_buf* buf, bool alert, const char* fmt
 	va_end(vl);
 }
 
-static void cpublk_update(struct blk* blk)
+static struct udev_device *find_device_by_driver_name(const char *driver_name)
+{
+	struct udev_enumerate *enu;
+	struct udev_list_entry *entry;
+	const char *syspath;
+	struct udev_device *dev = NULL;
+
+	enu = udev_enumerate_new(udev);
+	udev_enumerate_add_match_sysattr(enu, "name", driver_name);
+	udev_enumerate_scan_devices(enu);
+
+	entry = udev_enumerate_get_list_entry(enu);
+	if (entry != NULL) {
+		syspath = udev_list_entry_get_name(entry);
+		dev = udev_device_new_from_syspath(udev, syspath); 
+	}
+
+	udev_enumerate_unref(enu);
+	return dev;
+}
+
+static int device_sysattr_scanf(const char *driver_name, const char *sysattr, const char *fmt, ...)
+{
+	struct udev_device *dev;
+	const char *sysattr_value;
+	va_list vl;
+	int ret = -1;
+
+	va_start(vl, fmt);
+
+	dev = find_device_by_driver_name(driver_name);
+	if (dev == NULL)
+		goto Lret;
+
+	sysattr_value = udev_device_get_sysattr_value(dev, sysattr);
+	ret = vsscanf(sysattr_value, fmt, vl);
+
+	udev_device_unref(dev);
+Lret:
+	va_end(vl);
+	return ret;
+}
+
+static void cpublk_update(struct blk *blk)
 {
 	static unsigned long long a[4] = { 0 };
 
 	unsigned long long b[4];
-	double usage_percent, therm;
+	double usage_percent;
+	double therm, therm2;
 	bool alert;
 
+	/* usage info */
 	fscanf_aux("/proc/stat", "%*s %llu %llu %llu %llu", &b[0], &b[1], &b[2],
 		&b[3]);
 
-	fscanf_aux(cpu_thermal_file, cpu_thermal_scan_fmt, &therm);
 
 	usage_percent = (double)((b[0]+b[1]+b[2]) - (a[0]+a[1]+a[2])) / 
 	            (double)((b[0]+b[1]+b[2]+b[3]) - (a[0]+a[1]+a[2]+a[3])); 
@@ -126,23 +182,39 @@ static void cpublk_update(struct blk* blk)
 	memcpy(a, b, sizeof(a));
 
 	usage_percent *= 100;
-	therm /= cpu_thermal_divisor;
 
-	alert = therm >= cpu_therm_alert_val || usage_percent >= cpu_usage_alert_val;
+	/* thermal info */
+	switch (cpu_thermal_driver) {
+	case CPU_THERMAL_DRIVER_K10TEMP:
+		device_sysattr_scanf("k10temp", "temp1_input", "%lf", &therm);
+		therm /= 1000;
+		break;
+	case CPU_THERMAL_DRIVER_INTEL_SOC_DTS:
+		device_sysattr_scanf("soc_dts0", "temp1_input", "%lf", &therm);
+		device_sysattr_scanf("soc_dts1", "temp1_input", "%lf", &therm2);
+		therm = ((therm + therm2) / 2) / 1000;
+		break;
+	}
+
+	alert = therm >= cpu_therm_alert_val ||
+		usage_percent >= cpu_usage_alert_val;
 
 	blk_buf_clean(&blk->buf);
 	blk_buf_alert_write(&blk->buf, alert, "[CPU %04.1lf%% %.1lfºC]",
 		usage_percent, therm);
 }
 
-static void gpublk_update(struct blk* blk)
+static void gpublk_update(struct blk *blk)
 {
 	double therm;
 	bool alert;
 
-	fscanf_aux(gpu_thermal_file, gpu_thermal_scan_fmt, &therm);
-
-	therm /= gpu_thermal_divisor;
+	switch (gpu_thermal_driver) {
+	case GPU_THERMAL_DRIVER_AMDGPU:
+		device_sysattr_scanf("amdgpu", "temp1_input", "%lf", &therm);
+		therm /= 1000;
+		break;
+	}
 
 	alert = therm >= gpu_therm_alert_val;
 
@@ -150,7 +222,7 @@ static void gpublk_update(struct blk* blk)
 	blk_buf_alert_write(&blk->buf, alert, "[GPU %.1lfºC]", therm);
 }
 
-static void ramblk_update(struct blk* blk)
+static void ramblk_update(struct blk *blk)
 {
 	unsigned long total, free, cached, buffers;
 	double in_use, usage_percent;
@@ -177,7 +249,7 @@ static void ramblk_update(struct blk* blk)
 	blk_buf_alert_write(&blk->buf, alert, "[RAM %1.1lf%%]", usage_percent);
 }
 
-static void mountblk_update(struct blk* blk)
+static void mountblk_update(struct blk *blk)
 {
 	struct statvfs info;
 	double total, avail, used;
@@ -200,11 +272,11 @@ static void mountblk_update(struct blk* blk)
 	blk_buf_write(&blk->buf, "]");
 }
 
-static void timedateblk_update(struct blk* blk)
+static void timedateblk_update(struct blk *blk)
 {
 	char tmpbuf[BLK_BUFFER_SIZE];
 	struct timeval tv;
-	struct tm* tm;
+	struct tm *tm;
 
 	gettimeofday(&tv, NULL);
 	tm = localtime(&tv.tv_sec);
@@ -214,9 +286,9 @@ static void timedateblk_update(struct blk* blk)
 	blk_buf_write(&blk->buf, "[%s]", tmpbuf);
 }
 
-static ssize_t weatherblk_curl_clbk(void* data, size_t size, size_t nmemb, void* udata)
+static ssize_t weatherblk_curl_clbk(void *data, size_t size, size_t nmemb, void *udata)
 {
-	char* tmpbuf = udata;
+	char *tmpbuf = udata;
 	const size_t data_size = size * nmemb;
 
 	if (data_size >= BLK_BUFFER_SIZE)
@@ -227,11 +299,11 @@ static ssize_t weatherblk_curl_clbk(void* data, size_t size, size_t nmemb, void*
 	return data_size;
 }
 
-static void weatherblk_update(struct blk* blk)
+static void weatherblk_update(struct blk *blk)
 {
 	char tmpbuf[BLK_BUFFER_SIZE];
 
-	CURL* ctx;
+	CURL *ctx;
 	CURLcode code;
 
 	ctx = curl_easy_init();
@@ -305,10 +377,12 @@ static void dwmstat_init()
 	root = RootWindow(dpy, DefaultScreen(dpy));
 	signal(SIGTERM, dwmstat_sighandler);
 	signal(SIGINT, dwmstat_sighandler);
+	udev = udev_new();
 }
 
 static void dwmstat_term()
 {
+	udev_unref(udev);
 	XCloseDisplay(dpy);
 }
 

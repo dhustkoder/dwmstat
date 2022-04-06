@@ -1,17 +1,13 @@
-static const char* const locale = "en_US.UTF-8";
-static const char* const alert_txt = "!";
+static const char locale[] = "en_US.UTF-8";
+static const char alert_txt[] = "!";
 
-/* cpu thermal driver info */
-static const char* const cpu_thermal_file = "/sys/module/k10temp/drivers/pci:k10temp/0000:00:18.3/hwmon/hwmon0/temp1_input";
-static const char* const cpu_thermal_scan_fmt = "%lf";
-static const double cpu_thermal_divisor = 1000;
+/* specify the driver which reports CPU thermal information */
+static enum cpu_thermal_driver cpu_thermal_driver = CPU_THERMAL_DRIVER_K10TEMP;
 static const double cpu_usage_alert_val = 95.0;
 static const double cpu_therm_alert_val = 60.0;
 
-/* gpu usage and thermal drivers info */
-static const char* const gpu_thermal_file = "/sys/module/amdgpu/drivers/pci:amdgpu/0000:06:00.0/hwmon/hwmon1/temp1_input";
-static const char* const gpu_thermal_scan_fmt = "%lf";
-static const double gpu_thermal_divisor = 1000;
+/* specify the driver which reports GPU thermal information */
+static enum gpu_thermal_driver gpu_thermal_driver = GPU_THERMAL_DRIVER_AMDGPU;
 static const double gpu_therm_alert_val = 70.0;
 
 /* ram */
@@ -24,7 +20,7 @@ static struct mount_info mounts[] = {
 };
 
 /* weather wttr.in url */
-static const char* const wttr_url = "https://wttr.in/Sao+Paulo,Brazil?format=%C+%t";
+static const char wttr_url[] = "https://wttr.in/Sao+Paulo,Brazil?format=%C+%t";
 
 static struct blk blks[] = {
 	{ .update_fn = cpublk_update, .delay = 5 },
