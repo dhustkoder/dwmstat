@@ -57,7 +57,7 @@ static void mountblk_update(struct blk *blk);
 static void timedateblk_update(struct blk *blk);
 static void weatherblk_update(struct blk *blk);
 
-#include "config.h"
+#include "dhust-nx-config.h"
 
 static Display *dpy;
 static Window root;
