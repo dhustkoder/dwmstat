@@ -12,7 +12,7 @@ config.h: config.def.h
 	cp config.def.h config.h
 
 install: all
-	cp dwmstat /usr/local/bin
+	cp -f dwmstat /usr/local/bin
 
 uninstall:
 	rm /usr/local/bin/dwmstat
