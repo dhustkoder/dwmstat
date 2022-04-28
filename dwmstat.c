@@ -10,7 +10,6 @@
 
 #include <libudev.h>
 #include <unistd.h>
-#include <sys/time.h>
 #include <sys/statvfs.h>
 #include <X11/Xlib.h>
 #include <curl/curl.h>
@@ -275,11 +274,11 @@ static void mountblk_update(struct blk *blk)
 static void timedateblk_update(struct blk *blk)
 {
 	char tmpbuf[BLK_BUFFER_SIZE];
-	struct timeval tv;
 	struct tm *tm;
+	time_t timev;
 
-	gettimeofday(&tv, NULL);
-	tm = localtime(&tv.tv_sec);
+	timev = time(NULL);
+	tm = localtime(&timev);
 	strftime(tmpbuf, BLK_BUFFER_SIZE, "%A %B %d %H:%M", tm);
 
 	blk_buf_clean(&blk->buf);
