@@ -19,9 +19,11 @@ static struct mount_info mounts[] = {
 	{ .path = "/home", .label = "HOME" },
 };
 
-/* weather wttr.in url */
-static const char wttr_url[] = "https://wttr.in/Sao+Paulo,Brazil?format=%C+%t";
+/* weather url and error str */
+static const char weatherblk_url[] = "https://wttr.in/Sao+Paulo,Brazil?format=%C+%t";
+static const char weatherblk_error_str[] = "Unknown location";
 
+/* active blocks */
 static struct blk blks[] = {
 	{ .update_fn = cpublk_update, .delay = 5 },
 	{ .update_fn = gpublk_update, .delay = 5 },

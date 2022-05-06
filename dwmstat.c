@@ -295,6 +295,10 @@ static ssize_t weatherblk_curl_clbk(void *data, size_t size, size_t nmemb, void 
 
 	memcpy(tmpbuf, data, data_size);
 	tmpbuf[data_size] = '\0';
+
+	if (strstr(tmpbuf, weatherblk_error_str) != NULL)
+		return -1;
+
 	return data_size;
 }
 
@@ -307,12 +311,11 @@ static void weatherblk_update(struct blk *blk)
 
 	ctx = curl_easy_init();
 	assert(ctx != NULL);
-	curl_easy_setopt(ctx, CURLOPT_URL, wttr_url);
+	curl_easy_setopt(ctx, CURLOPT_URL, weatherblk_url);
 	curl_easy_setopt(ctx, CURLOPT_WRITEFUNCTION, weatherblk_curl_clbk);
 	curl_easy_setopt(ctx, CURLOPT_WRITEDATA, tmpbuf);
 	curl_easy_setopt(ctx, CURLOPT_TIMEOUT, 3);
 	code = curl_easy_perform(ctx);
-
 	if (code == CURLE_OK) {
 		blk_buf_clean(&blk->buf);
 		blk_buf_write(&blk->buf, "[%s]", tmpbuf);
